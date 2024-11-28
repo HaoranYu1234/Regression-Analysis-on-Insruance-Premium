@@ -1,0 +1,444 @@
+---
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+# Loading relevant libraries
+
+```{r}
+library(ggplot2)
+library(sp)
+library(dplyr)
+library(tibble)
+library(car)
+library(MASS)
+library(glmnet)
+library(lmtest)
+```
+
+# Loading and adjusting the data set
+
+If we exam the data set, we can see that the downloaded data is in a very weird format, which has only one column and information are split by semicolon. In order to adjust the data into a format we want for analysis, we will perform the following:
+
+```{r}
+predata = read.csv("~/STA302/Final project/Motor vehicle insurance data.csv", sep = ";")
+```
+
+```{r}
+write.csv(predata, "~/STA302/Final project/Motor vehicle insurance data_adjusted.csv", row.names = FALSE)
+```
+
+Now we have correct the data set into the format we want, we can now load the data with a proper format for regression:
+
+```{r}
+data = read.csv("~/STA302/Final project/Motor vehicle insurance data_adjusted.csv")
+```
+
+# Viewing the initial data
+
+After loading the data
+
+```{r}
+# First, we want to see the dimension of the data
+dim(data)
+```
+
+We can see that the data frame has a dimension of $105555 \times 30$.
+
+```{r}
+head(data)
+```
+
+Using the head function we can see the first few rows of the data set.
+
+```{r}
+# Now, we want to check the columnes of the data set
+
+colnames(data)
+```
+
+We can see that there are a total of 30 columns in the data set, each represent a different attribute in the data set. From the source where we downloaded the data set, it comes with a special excel file containing the description of these columns. Here is the link to the website where we gathered the data set: [source](https://www.openicpsr.org/openicpsr/project/193182/version/V1/view;jsessionid=C38C78894508D4679F334EB94D327851). According to that excel file, I will paraphrase the description of the attributes here:
+
+-   **ID:** A unique identification number to each annual insurance policy hold by each insured person, a single insured person can has multiple policies, thus, their can be multiple rows starting with the same ID.
+-   **Date_start_contract:** The start date of the annual contract.
+-   **Date_last_renewal:** The last renewal date of the contract.
+-   **Date_next_renewal:** The date of the next contract renewal.
+-   **Date_birth:** The birthday of the insured person in the contract.
+-   **Date_driving_licence:** The date when the insured person receives their driver license.
+-   **Distribution_channel:** The way that the insured person got the contract, 1 means a broker, 0 means a agent.
+-   **Seniority:** How long the insured person has been in the relationship with the insurance company.
+-   **Policies_in_force:** The total number of active policies for the insured person between Date_last_renewal to Date_next_renewal.
+-   **Max_policies:** The maximum number of insurance policies a person can hold at any time, which is decided by the insurance company.
+-   **Max_products:** The maximum number of insurance policies a person can hold at the same time, which is decided by the insurance company.
+-   **Lapse:** The number of insurance policies that can expire if the insured person does not renewal the policy before the Date_next_renewal.
+-   **Date_lapse:** The date of the policy terminates, which is the same as the Date_next_renewal.
+-   **Payment:** The most recent payment method used by the insured person for the premium, 1 means a half-yearly administrative process and 0 means an annual payment method.
+-   **Premium:** The net fees for the specific annual insurance policy.
+-   **Cost_claims_year:** The cost of claims for the insurance company during the annual insurance policy i.e. between Date_last_renewal and Date_next_renewal.
+-   **N_claims_year:** The number of claims submitted during the annual insurance policy i.e. between Date_last_renewal and Date_next_renewal.
+-   **N_claims_history:** The total number of claims submitted during the entire span of insurance policy.
+-   **R_Claims_history:** 
+
+$$\frac{\text{N_claims_history}}{\text{Total number of years}}$$
+-   **Type_risk:** The type of risk for policy, specifically each value represents a different type of vehicle: 1 for motorbikes, 2 for vans, 3 for passenger cars, and 4 for agricultural vehicles.
+-   **Area:** 1 means a urban area with more than 30000 people, and 0 means rural areas.
+-   **Second_driver:** The number of drivers included in the insurance policy for the particular vehicle, 0 means only 1 driver, and 1 means more than 1 driver.
+-   **Year_matriculation:** The registration year of the vehicles.
+-   **Power:** The horse power of the vehicles in the policy.
+-   **Cylinder_capacity:** It is a technical car term used to describe the volume of all the cylinders of the engine of the vehicle.
+-   **Value_vehicle:** The market value of the vehicle on the last day of year 2019.
+-   **N_doors:** The number of doors on the vehicle.
+-   **Type_fuel:** The type of fuel the vehicle uses, P means petrol and D means diesel.
+-   **Length:** The length of the vehicle in meters.
+-   **Weight:** The weight of the vehicle in kilograms.
+
+# Data cleaning
+
+Before we perform any operations and analysis on the data set, we must first clean the data set from any missing values and outliers.
+
+```{r}
+# let us check the number of missing values from the data set
+colSums(is.na(data))
+```
+
+From this result, we can see that there are no missing values for any columns except for Type_fuel and Length.
+
+```{r}
+sum(is.na(data))
+```
+
+And there are a total of 12093 number of missing values in the data set. This means we need to remove them.
+
+Considering Length is a numeric variable, we can replace the missing values with its mean. However, because Type_fuel is a categorical variable, we can only remove the rows with missing Type_fuel, and then replace the missing values of Length with its mean.
+
+```{r}
+data2 = filter(data, !is.na(Type_fuel))
+```
+
+```{r}
+colSums(is.na(data2))
+```
+
+We see the missing value Type_fule has been filtered out, now, we will replace the missing value in Length with its mean.
+
+```{r}
+data2$Length[is.na(data2$Length)] = mean(data2$Length, na.rm = TRUE)
+```
+
+We check for the missing value again:
+
+```{r}
+colSums(is.na(data2))
+```
+
+
+# Initial predictor selection and transformation
+
+Before we construct any models, we must determine which variables are involved in the analysis. Since we are performing regression analysis on the "Premium", the variables involving in the analysis should only impact the pricing of the policy. Since the pricing of a auto insurance policy is based on inherent risk and credit of the insured person, the predictors we used in the analysis should only impact the risk and credit of the insured person. Other independent variables are not going to be useful when predicting the premium.
+
+First, the variable "Premium" is going to be our response variable. And for the predictor variables, we will start by not considering "ID", which is merely a tracking variable in the data set. "Date_start_contract", "Date_last_renewal", "Date_next_renewal", and "Date_lapse" are covered with "Lapse" and "Seniority". As for the "Date_driving_licence", "Date_birth", and "Year_matriculation", We will normalize these time variables by taking the number of years between the last day of 2019 and the date recorded in these variables. So, we will have a numeric variable to work with. We will also exclude N_claims_year and R_Claims_history because variable N_claims_history has included and covered the same information. Payment will also not be considered in the regression analysis because the payment method does not interfere with the total premium paid by the insured person. Only Max_policies will be included in the analysis because it covers the data from Max_products. Distribution channel will also not be included because it does not contribute to the pricing of the insurance.
+
+In order to normalize "Date_birth", "Date_driving_licence", and "Year_matriculation". This means we must transform these information into something we can work with in a regression. In the evaluation of the insurance premium, age, experiences of the insured person, and the age of the insured vehicles are all in the consideration. Considering the data set has annualized each policy information, we will perform the following operations:
+
+1: For Date_birth, we will divide cases based on different payment method:
+
+-   When the payment method is annual, the insurance company consider the premium based on the age at Date_last_renewal, thus, we will just take the age as Date_last_renewal minus the Date_birth.
+
+-   When the payment is semiannual, the insurance company consider the premium semiannually, thus, we need to calculate the age at each payment period i.e. every 6 month, and take the arithmetic average of the two ages to be fair, this means:
+
+$$\frac{\text{age 1} + \text{age 2}}{2}$$
+
+2: For Date_driving_licence, we will do the same, but instead take the renewal date minus the Date_driving_licence. And we will also take the average.
+
+3: For Year_matriculation, we have a little special case because we only have the year of the registration of the vehicles instead of a month and a day. In order to accurately estimate this metric, we will take the year from the Date_last_renewal and use that to minus the Year_matriculation. Consider vehicles are durable products in general, this estimation would not impact the true metric of measuring risk in general.
+
+```{r}
+# Only run this code once. Otherwise clear the output before run again.
+
+library(lubridate)
+
+# Function to calculate the age of the insured person
+person_age = function(premium_date, birthday) {
+  age = as.numeric(difftime(premium_date, birthday, units = "days")) / 365
+  return(age)
+}
+
+# Function to calculate the driving age
+time_driving = function(premium_date, licence_date) {
+  age1 = as.numeric(difftime(premium_date, licence_date, units = "days")) / 365
+  return(age1)
+}
+
+# Converting to date format for lubridate
+data2$Date_birth = dmy(data2$Date_birth)
+data2$Date_last_renewal = dmy(data2$Date_last_renewal)
+data2$Date_driving_licence = dmy(data2$Date_driving_licence)
+data2$Year_matriculation = as.numeric(data2$Year_matriculation)
+
+# Find the age of the insured person using mutate and case_when
+data2 = data2 %>%
+  mutate(brithday_diff = case_when(
+    Payment == 0 ~ person_age(Date_last_renewal, Date_birth),
+    Payment == 1 ~ (person_age(Date_last_renewal, Date_birth) + person_age((Date_last_renewal %m+% months(6)), Date_birth)) / 2
+  ))
+
+# Find the driving age of the insured person
+data2 = data2 %>%
+  mutate(drive_age = case_when(
+    Payment == 0 ~ time_driving(Date_last_renewal, Date_driving_licence),
+    Payment == 1 ~ (time_driving(Date_last_renewal, Date_driving_licence) + time_driving((Date_last_renewal %m+% months(6)), Date_driving_licence)) / 2
+  ))
+
+# Find the vehicle age of the insured person in year
+data2$Year_renewal = as.numeric(format(data2$Date_last_renewal, "%Y"))
+data2$age_car = data2$Year_renewal - data2$Year_matriculation
+
+
+head(data2)
+```
+
+
+
+As we can see, we have normalized the Date_birth into brithday_diff, Date_driving_licence into drive_age, and Year_matriculation into age_car. Now, we will filter the variables we are going to use in a new data set:
+
+```{r}
+data3 = data.frame(brithday_diff = data2$brithday_diff, drive_age = data2$drive_age, Seniority = data2$Seniority, Policies_in_force = data2$Policies_in_force, Max_policies = data2$Max_policies, Lapse = data2$Lapse, Premium = data2$Premium, Cost_claims_year = data2$Cost_claims_year, N_claims_history = data2$N_claims_history, Type_risk = data2$Type_risk, Area = data2$Area, Second_driver = data2$Second_driver, age_car = data2$age_car, Power = data2$Power, Cylinder_capacity = data2$Cylinder_capacity, Value_vehicle = data2$Value_vehicle, N_doors = data2$N_doors, Type_fuel = data2$Type_fuel, Length = data2$Length, Weight = data2$Weight)
+
+head(data3)
+```
+
+Before we move to any formal model construction, we need to consider the fact that our model in one way or another requires transformations. And in square root and log transformation, they only works for positive values. Thus, we need to see if our data set has any negative values just in case:
+
+```{r}
+num_neg_per_col = function(x) {
+  sum(x < 0, na.rm = TRUE)
+}
+
+sapply(data3, num_neg_per_col)
+```
+We can see that there are 26 data points with negative drive_age, this does not mean our calculation of drive_age is wrong, but means after and right on the renewal of the policy, the driver renewed his license. However, this means we need to clean those meaningless data point from the data set by cleaning the whole row.
+
+```{r}
+data4 = data3 %>%
+  filter(drive_age > 0) 
+
+head(data4)
+```
+
+# Initial model construction
+
+```{r}
+model = lm(Premium ~. , data = data4)
+
+summary(model)
+
+plot(model)
+```
+
+```{r}
+bptest(model)
+```
+From the test, we can see that we have non constant variance issue.
+
+```{r}
+cooks.distance(model)
+
+plot(model, which=4)
+```
+
+We see that there is 1 potential influential points in the model. We will transform the data first and deal with the influential point later to see if it still exists after the transformation.
+
+```{r}
+# We will apply log transformations on the response and numeric predictors with decimals.
+# We apply square root transformations on the predictors with counting data.
+# We added 1 to the log transformation to avoid 0 under log, which is in the data set
+# We apply no transformation to the categorical variables.
+# The reason why we did sqrt on couting data is because the professor did similar thing in lecture, the one involving cleaning room data set.
+
+data5 = data.frame(
+  log_premium = log(data4$Premium + 1),
+  log_brithday_diff = log(data4$brithday_diff + 1),
+  log_drive_age = log(data4$drive_age + 1),
+  sqrt_Seniority = sqrt(data4$Seniority),
+  sqrt_Policies_in_force = sqrt(data4$Policies_in_force),
+  sqrt_Max_policies = sqrt(data4$Max_policies),
+  sqrt_Lapse = sqrt(data4$Lapse),
+  log_Cost_claims_year = log(data4$Cost_claims_year + 1),
+  sqrt_N_claims_history = sqrt(data4$N_claims_history),
+  Type_risk = data4$Type_risk,
+  Area = data4$Area,
+  Second_driver = data4$Second_driver,
+  sqrt_age_car = sqrt(data4$age_car),
+  sqrt_Power = sqrt(data4$Power),
+  log_Cylinder_capacity = log(data4$Cylinder_capacity),
+  log_Value_vehicle = log(data4$Value_vehicle + 1),
+  sqrt_N_doors = sqrt(data4$N_doors),
+  Type_fuel = data4$Type_fuel,
+  Length = log(data4$Length + 1),
+  sqrt_Weight = sqrt(data4$Weight)
+  )
+
+data5$Type_fuel = ifelse(data5$Type_fuel == "P", 1, 0)
+```
+
+```{r}
+model1 = lm(log_premium ~. , data = data5)
+
+summary(model1)
+
+plot(model1)
+```
+
+```{r}
+bptest(model1)
+```
+From the test with the small p value, we can see that there are still a level of non constant variance issue.
+
+```{r}
+cooks.distance(model1)
+
+plot(model1, which=4)
+```
+From the new cook distance, we see that we no longer has a potential influential point.
+
+From out initial transformation on the dataset, we can see that there are still some normality and variance issues. Thus, we will apply Box cox to attempt to fix the problem.
+
+```{r}
+# Apply Box Cox on model1
+
+boxcox_result = boxcox(model)
+
+lambda = boxcox_result$x[which.max(boxcox_result$y)]
+
+model_boxcox = lm(((log_premium ^ lambda - 1) / lambda) ~. , data = data5)
+
+summary(model_boxcox)
+
+plot(model_boxcox)
+```
+
+```{r}
+bptest(model_boxcox)
+```
+
+Unfortunately the non constant variance issue presists. This could due to the fact that the data set has some complex patterns in their distributions with the huge number of data points, leading to a very complex distribution of variance that cannot be fully addressed with the methods learnt in this course. This does not necessary indicate our model is incorrect, it indicates that we should use a more flexible model such as generalized least squares, which is not in the scope of the course.
+
+Becuase our model has more than 5000 sample size, we cannot apply shapiro test to test for normality, but since we are seeing improved adjusted R sqaure, we can conclue that th normality issue has some improvements.
+
+```{r}
+cooks.distance(model_boxcox)
+
+plot(model_boxcox, which=4)
+```
+Considering there are no points above 0.5, we conclude that there are no potential influential points by Cook's distance method.
+
+Now we need to check for multi-collinity:
+
+```{r}
+vif_results = vif(model_boxcox)
+barplot(vif_results, col = "skyblue", main = "Variance Inflation Factor (VIF)")
+```
+
+From the VIF inflator test, we can see that we have some serious multicollinearity becuase $VIF > 5$ and some predictors have $VIF > 1$. Thus, we will need to apply ridge regression to attempt to fix it:
+
+```{r}
+
+# Apply ridge regression
+mod_rg = lm.ridge((log_premium ^ lambda - 1) / lambda ~. ,data=data5, lambda = seq(0,5,0.01))
+
+optimal_lambda = MASS::select(mod_rg)
+
+optimal_lambda
+
+# Thus, 5 is our optimal Lambda
+```
+
+```{r}
+mod_rg1 = lm.ridge((log_premium ^ lambda - 1) / lambda ~. ,data=data5, lambda = 5)
+```
+
+```{r}
+ridge_coef = coef(mod_rg1)
+
+predictors = as.matrix(data5[, -1])
+
+predictors = cbind(1, predictors)
+```
+
+```{r}
+# We calculate the R square manually becuase we cannot use the summary() for ridge regression in R
+
+fitted_values = predictors %*% ridge_coef
+
+actual_values = (data5$log_premium ^ lambda - 1) / lambda
+
+TSS = sum((actual_values - mean(actual_values))^2)
+RSS = sum((actual_values - fitted_values)^2)
+
+R2 = 1 - (RSS / TSS)
+
+n = nrow(data5)
+p = ncol(data5) - 1
+
+adj_R2 = 1 - ((1 - R2) * (n - 1) / (n - p - 1))
+
+print(paste("R square is " , R2))
+
+print(paste("Adjusted R square is ", adj_R2))
+
+n
+```
+
+```{r}
+# we will calculate the F statistics manually with alpha = 0.05
+
+SSreg = sum((fitted_values - mean(actual_values))^2)
+
+whole_F = (SSreg / p) / (RSS / (n - p - 1))
+
+F_0.95 = qf(0.95, p, n-p-1)
+
+print(paste("F statistics is " , whole_F))
+
+print(paste("The CDF is ", F_0.95))
+
+F_0.95 < whole_F
+```
+
+```{r}
+ridge_coef
+```
+
+
+
+After running the ridge regression, we should have handled the multicollinearity from the model.
+
+Considering this low Adjusted R square, it is likely linearity, constant variance, normality and uncollerated error are violated. However, after performing all the transformations and regression method we know from this course, our model after the ridge regression has a adjusted R square of about 0.4748, and becuase the F statistics is bigger than the $F_{1-0.05}(p, n-p-1)$, we reject the null hypothesis, and conclude that there is evidence of a statistically significant linear relationship.
+
+Additionally, considering from the research background, which is finance, this relatively low adjusted R square is not necessarily a indicator for the failure of the model construction. As a matter of fact, our model has revealved that there is in fact a linear relationship between the predictors and the insurance premium.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
